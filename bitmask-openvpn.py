@@ -34,48 +34,7 @@ def api_request(endpoint):
     req = urllib.request.Request(API_URL + endpoint, method="POST")
     return urllib.request.urlopen(req, context=ctx)
 
-def generate_openvpn_config():
-    with api_request("config/eip-service.json") as response:
-        bitmask_config = json.load(response)
-
-    ovpn_config = []
-    for opt, val in bitmask_config["openvpn_configuration"].items():
-        if opt not in ALLOWED_OPTIONS:
-            logging.warning("Ignoring unsafe OpenVPN setting %r", opt)
-            continue
-        if val and val is not True:
-            opt = "{} {}".format(opt, val)
-        ovpn_config.append(opt)
-
-    ovpn_config.extend([
-        "cert " + CERT_FILENAME,
-        "key " + CERT_FILENAME,
-        "ca " + CA_FILENAME,
-        "persist-tun",
-        "nobind",
-        "client",
-        "dev tun",
-        "tls-client",
-        "remote-cert-tls server",
-        "tls-version-min 1.0",
-        "dhcp-option DNS 10.41.0.1",
-        "writepid " + PID_FILENAME,
-    ])
-
-    for gw in bitmask_config["gateways"]:
-        if bitmask_config["locations"][gw["location"]]["country_code"] not in COUNTRY_CODES:
-            continue
-        for tp in gw["capabilities"]["transport"]:
-            if tp["type"] != "openvpn":
-                continue
-            for port in tp["ports"]:
-                if int(port) == 53:
-                    continue
-                ovpn_config.append("remote {} {}".format(gw["ip_address"], port))
-
-    return ovpn_config
-
-def sort_remotes_by_ping(options):
+def select_gateways_by_ping(gateways):
     threads = []
     stats = {}
 
@@ -97,7 +56,7 @@ def sort_remotes_by_ping(options):
             logging.warning("Failed to run %s", cmd)
         stats[host] = (paket_loss, latency)
 
-    for host in {extract_host(opt) for opt in options if is_remote(opt)}:
+    for host, _ in gateways:
         thread = threading.Thread(target=run_in_thread, args=(host,))
         thread.start()
         threads.append(thread)
@@ -105,7 +64,52 @@ def sort_remotes_by_ping(options):
     for thread in threads:
         thread.join()
 
-    options.sort(key=lambda o: stats[extract_host(o)] if is_remote(o) else (0, 0))
+    return sorted(gateways, key=lambda gw: stats[gw[0]])[:3]
+
+def generate_openvpn_config():
+    with api_request("config/eip-service.json") as response:
+        bitmask_config = json.load(response)
+
+    ovpn_config = [
+        "cert " + CERT_FILENAME,
+        "key " + CERT_FILENAME,
+        "ca " + CA_FILENAME,
+        "persist-tun",
+        "nobind",
+        "client",
+        "dev tun",
+        "tls-client",
+        "remote-cert-tls server",
+        "tls-version-min 1.0",
+        "dhcp-option DNS 10.41.0.1",
+        "writepid " + PID_FILENAME,
+    ]
+
+    for opt, val in bitmask_config["openvpn_configuration"].items():
+        if opt not in ALLOWED_OPTIONS:
+            logging.warning("Ignoring unsafe OpenVPN setting %r", opt)
+            continue
+        if val and val is not True:
+            opt = f"{opt} {val}"
+        ovpn_config.append(opt)
+
+    gateways = []
+    for gw in bitmask_config["gateways"]:
+        if bitmask_config["locations"][gw["location"]]["country_code"] not in COUNTRY_CODES:
+            continue
+        for tp in gw["capabilities"]["transport"]:
+            if tp["type"] != "openvpn":
+                continue
+            ports = [port for port in map(int, tp["ports"]) if port != 53]
+            if not ports:
+                continue
+            gateways.append((gw["ip_address"], ports))
+
+    for host, ports in select_gateways_by_ping(gateways):
+        for port in ports:
+            ovpn_config.append(f"remote {host} {port}")
+
+    return ovpn_config
 
 def update_openvpn_config(force=False):
     try:
@@ -126,7 +130,6 @@ def update_openvpn_config(force=False):
             logging.info("Reusing cached OpenVPN configuration")
             return False
 
-    sort_remotes_by_ping(new_config)
     logging.info("Writing new OpenVPN configuration to %s", OVPN_CONFIG_FILENAME)
     with open(OVPN_CONFIG_FILENAME, "w") as file:
         for line in new_config:
