@@ -21,7 +21,15 @@ OVPN_CONFIG_FILENAME = "bitmask.ovpn"
 CERT_FILENAME = "cert.pem"
 CA_FILENAME = "ca.pem"
 PID_FILENAME = "pid"
-ALLOWED_OPTIONS = {"auth", "cipher", "keepalive", "tls-cipher", "tun-ipv6", "float"}
+ALLOWED_OPTIONS = {
+    "auth", "cipher", "keepalive", "tun-ipv6", "float",
+
+    # OpenVPN fails to perform TLS handshake on UniFi OS 1.12.38 with
+    # tls-cipher DHE-RSA-AES128-SHA as provided by Riseup's Bitmask server
+    # https://github.com/peacey/split-vpn/issues/160
+    #
+    # "tls-cipher",
+}
 
 def check_ca():
     if not os.access(CA_FILENAME, os.R_OK):
