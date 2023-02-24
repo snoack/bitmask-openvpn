@@ -51,7 +51,7 @@ def select_gateways_by_ping(gateways):
 
     def run_in_thread(host):
         cmd = ["ping", host, "-c", "3"]
-        p = subprocess.run(cmd, stdout=subprocess.PIPE, encoding="ascii")
+        p = subprocess.run(cmd, stdout=subprocess.PIPE, universal_newlines=True)
         paket_loss = latency = math.inf
         if p.returncode == 0:
             m = re.search(r"([\d.]+)% packet loss.*" +
@@ -76,7 +76,7 @@ def select_gateways_by_ping(gateways):
 
 def generate_openvpn_config():
     with api_request("config/eip-service.json") as response:
-        bitmask_config = json.load(response)
+        bitmask_config = json.loads(response.read().decode("utf-8"))
 
     ovpn_config = [
         "cert " + CERT_FILENAME,
@@ -98,7 +98,7 @@ def generate_openvpn_config():
             logging.warning("Ignoring unsafe OpenVPN setting %r", opt)
             continue
         if val and val is not True:
-            opt = f"{opt} {val}"
+            opt = "{} {}".format(opt, val)
         ovpn_config.append(opt)
 
     gateways = []
@@ -115,7 +115,7 @@ def generate_openvpn_config():
 
     for host, ports in select_gateways_by_ping(gateways):
         for port in ports:
-            ovpn_config.append(f"remote {host} {port}")
+            ovpn_config.append("remote {} {}".format(host, port))
 
     return ovpn_config
 
@@ -149,7 +149,7 @@ def update_cert(force=False):
     if not force and os.path.exists(CERT_FILENAME):
         p = subprocess.run(
             ["openssl", "x509", "-in", CERT_FILENAME, "-noout", "-enddate"],
-            stdout=subprocess.PIPE, encoding="ascii", check=True
+            stdout=subprocess.PIPE, universal_newlines=True, check=True
         )
         expires = datetime.strptime(p.stdout.strip(), "notAfter=%b %d %H:%M:%S %Y %Z")
         if expires > datetime.now() + timedelta(weeks=1):
